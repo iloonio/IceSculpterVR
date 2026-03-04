@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
+[ExecuteAlways]
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class MarchingCubes : MonoBehaviour
 {
@@ -25,7 +26,15 @@ public class MarchingCubes : MonoBehaviour
     private List<Vector3> vertices = new List<Vector3>();
     private List<int> triangles = new List<int>();
 
+    // When true, reverse triangle winding so the mesh faces inward.
+    [SerializeField] private bool invertSurface = false;
+
+    // When true, generate both the normal and inverted-side triangles so the
+    // surface is visible from either side.
+    [SerializeField] private bool doubleSided = false;
+
     private MeshFilter meshFilter;
+    private Mesh proceduralMesh;
 
     // 3D scalar field / density grid used by marching cubes. Each cell corner stores a
     // scalar value (here derived from Perlin noise and vertical distance). 
@@ -36,19 +45,46 @@ public class MarchingCubes : MonoBehaviour
     void Start()
     {
         meshFilter = GetComponent<MeshFilter>();
+        EnsureMeshInitialized();
         StartCoroutine(UpdateAll());
+    }
+
+    private void OnEnable()
+    {
+        meshFilter = GetComponent<MeshFilter>();
+        EnsureMeshInitialized();
+        if (!Application.isPlaying)
+        {
+            GenerateMesh();
+        }
+    }
+
+    private void OnValidate()
+    {
+        if (!Application.isPlaying)
+        {
+            meshFilter = GetComponent<MeshFilter>();
+            EnsureMeshInitialized();
+            GenerateMesh();
+        }
     }
 
     private IEnumerator UpdateAll()
     {
         while (true)
         {
-            SetDensityWithPerlin();
-            MarchCubes();
-            SetMesh(); 
+            GenerateMesh();
             yield return oneSecondWait;  
         }
         
+    }
+
+    // Public entrypoint to (re)generate the procedural mesh.
+    public void GenerateMesh()
+    {
+        SetDensityRandomized();
+        MarchCubes();
+        SetMesh();
     }
 
     private void MarchCubes()
@@ -57,14 +93,15 @@ public class MarchingCubes : MonoBehaviour
         triangles.Clear();
 
         // Quick sanity: densityGrid should be populated before marching.
-        // If `SetDensityWithPerlin` hasn't run yet this may be null.
+        // If density population hasn't run yet this may be null.
         if (densityGrid == null) return;
 
-        for (int x = 0; x < gridSizeXZ; x++)
+        // iterate only over the non-padded region
+        for (int x = 0; x <= gridSizeXZ; x++)
         {
-            for (int y = 0; y < gridSizeY; y++)
+            for (int y = 0; y <= gridSizeY; y++)
             {
-                for (int z = 0; z < gridSizeXZ; z++)
+                for (int z = 0; z <= gridSizeXZ; z++)
                 {
                     // Collect scalar values at the 8 corners of the current cube.
                     // The ordering must match the `MarchingTable.Vertices` ordering
@@ -77,6 +114,8 @@ public class MarchingCubes : MonoBehaviour
                     }
 
                     // Determine the cube configuration and emit triangles.
+                    // subtract one to undo padding so mesh coordinates start at origin
+                    // map padded indices directly so that coordinate 0 remains empty
                     MarchCube(new Vector3(x, y, z), GetConfigIndex(cubeVertices));
                 }
             }
@@ -148,58 +187,117 @@ public class MarchingCubes : MonoBehaviour
 
     private void SetMesh()
     {
-        // Currently a new Mesh is created each update which allocates memory.
-        // For frequently-updating procedural meshes consider reusing a single
-        // Mesh instance (e.g. `meshFilter.mesh` or a cached Mesh) and calling
-        // `mesh.Clear()` before assigning `vertices`/`triangles`. Also use
-        // `mesh.MarkDynamic()` for better performance on dynamic meshes.
-        Mesh mesh = new()
-        {
-            vertices = vertices.ToArray(),
-            triangles = triangles.ToArray()
-        };
-        mesh.RecalculateNormals();
-        mesh.RecalculateBounds();
+        EnsureMeshInitialized();
 
-        meshFilter.mesh = mesh;
+        proceduralMesh.Clear();
+        proceduralMesh.SetVertices(vertices);
+
+        // build vertex/triangle lists; may duplicate for double sided
+        List<Vector3> meshVerts = vertices;
+        List<int> triList = new List<int>(triangles);
+
+        if (invertSurface)
+        {
+            // flip winding on the original set
+            triList = new List<int>(triangles.Count);
+            for (int i = 0; i < triangles.Count; i += 3)
+            {
+                triList.Add(triangles[i]);
+                triList.Add(triangles[i + 2]);
+                triList.Add(triangles[i + 1]);
+            }
+        }
+
+        if (doubleSided)
+        {
+            // duplicate vertices for the inverted side so normals can differ
+            meshVerts = new List<Vector3>(vertices);
+            int origVertCount = vertices.Count;
+            int triCount = triList.Count;
+            for (int i = 0; i < triCount; i += 3)
+            {
+                // add reversed triangle with new vertex indices
+                meshVerts.Add(meshVerts[triList[i]]);
+                meshVerts.Add(meshVerts[triList[i + 2]]);
+                meshVerts.Add(meshVerts[triList[i + 1]]);
+                triList.Add(origVertCount++);
+                triList.Add(origVertCount++);
+                triList.Add(origVertCount++);
+            }
+        }
+
+        proceduralMesh.SetVertices(meshVerts);
+        proceduralMesh.SetTriangles(triList, 0);
+
+        proceduralMesh.RecalculateNormals();
+        if (invertSurface || doubleSided)
+        {
+            var ns = proceduralMesh.normals;
+            if (doubleSided)
+            {
+                // invert normals of the duplicated (second half) vertices
+                int start = meshVerts.Count - (triList.Count/3)*3;
+                for (int i = start; i < ns.Length; i++) ns[i] = -ns[i];
+            }
+            else
+            {
+                for (int i = 0; i < ns.Length; i++) ns[i] = -ns[i];
+            }
+            proceduralMesh.normals = ns;
+        }
+
+        proceduralMesh.RecalculateNormals();
+        if (invertSurface)
+        {
+            // normals have been calculated outward; flip them to point inward
+            var ns = proceduralMesh.normals;
+            for (int i = 0; i < ns.Length; i++) ns[i] = -ns[i];
+            proceduralMesh.normals = ns;
+        }
+        proceduralMesh.RecalculateBounds();
+
+        if (Application.isPlaying)
+            meshFilter.mesh = proceduralMesh;
+        else
+            meshFilter.sharedMesh = proceduralMesh;
     }
 
-    // Sets height of grid points using Perlin noise to generate terrain. 
-    private void SetDensityWithPerlin()
+    private void EnsureMeshInitialized()
     {
-        // Allocate scalar field with +1 to include grid boundaries.
-        densityGrid = new float[(int)gridSizeXZ + 1, (int)gridSizeY + 1, (int)gridSizeXZ + 1];
-
-        /* 
-        Populate the scalar field. For each grid column (x,z) we compute a
-        Perlin-based terrain height; then each cell's scalar value is set to
-        the absolute vertical distance from that terrain surface. This makes
-        `heights` behave like a distance field where the surface is at low
-        values. The marching cubes algorithm compares these values to `isolevel` 
-        to locate the surface.
-        */ 
-        for (int x = 0; x <= gridSizeXZ; x++)
+        if (meshFilter == null) meshFilter = GetComponent<MeshFilter>();
+        if (proceduralMesh == null)
         {
-            for (int z = 0; z <= gridSizeXZ; z++)
+            proceduralMesh = meshFilter.sharedMesh != null ? meshFilter.sharedMesh : new Mesh();
+            proceduralMesh.name = "ProceduralMarchingCubes";
+            proceduralMesh.MarkDynamic();
+            if (Application.isPlaying)
+                meshFilter.mesh = proceduralMesh;
+            else
+                meshFilter.sharedMesh = proceduralMesh;
+        }
+    }
+
+    // Populate the density grid with random values per grid point.
+    // This replaces the previous Perlin-based population and is useful
+    // for testing noisy, stochastic scalar fields.
+    private void SetDensityRandomized()
+    {
+        // Add a one-cell padding on each side in every dimension; the
+        // operational domain will occupy indices [1..size] and 0/size+1 are
+        // unused boundary layers.
+        int sizeX = (int)gridSizeXZ;
+        int sizeY = (int)gridSizeY;
+        int sizeZ = (int)gridSizeXZ;
+
+        densityGrid = new float[sizeX + 2, sizeY + 2, sizeZ + 2];
+
+        for (int x = 1; x <= sizeX; x++)
+        {
+            for (int y = 1; y <= sizeY; y++)
             {
-                // `currentHeight` depends only on (x,z) so computing it once
-                // outside the `y` loop avoids redundant PerlinNoise calls.
-                float currentHeight = Mathf.PerlinNoise(x * noiseResolution, z * noiseResolution) * gridSizeY;
-
-                for (int y = 0; y <= gridSizeY; y++)
+                for (int z = 1; z <= sizeZ; z++)
                 {
-                    float newHeight;
-
-                    if (y > currentHeight)
-                    {
-                        newHeight = y - currentHeight;
-                    }
-                    else
-                    {
-                        newHeight = currentHeight - y;
-                    }
-
-                    densityGrid[x, y, z] = newHeight;
+                    densityGrid[x, y, z] = Random.value;
                 }
             }
         }
@@ -209,13 +307,16 @@ public class MarchingCubes : MonoBehaviour
     {
         if (!visualizeNoise || !Application.isPlaying) return;
 
-        for (int x = 0; x <= gridSizeXZ; x++)
+        // visualize full padded grid (including boundaries)
+        int sizeX = (int)gridSizeXZ + 2;
+        int sizeY = (int)gridSizeY + 2;
+        int sizeZ = (int)gridSizeXZ + 2;
+        for (int x = 0; x < sizeX; x++)
         {
-            for (int y = 0; y <= gridSizeY; y++)
+            for (int y = 0; y < sizeY; y++)
             {
-                for (int z = 0; z <= gridSizeXZ; z++)
-                {
-                    // Guard against null/uninitialized densityGrid when not
+                for (int z = 0; z < sizeZ; z++)
+                {                    // Guard against null/uninitialized densityGrid when not
                     // populated yet (e.g. if this runs before Start()).
                     if (densityGrid == null) continue;
 
