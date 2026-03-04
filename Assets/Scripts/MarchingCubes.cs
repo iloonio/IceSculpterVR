@@ -2,6 +2,11 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
+//TODO: divvy up the code so everything isn't on the same file, e.g. seperate mesh rendering from marching cubes logic. 
+//TODO: Remove pointless code, such as inverting surfaces. 
+//TODO: add a function that reduces or increase value at a set vertex. 
+//TODO: add resolution to the grid, so we can increase and decrease the number of vertices while maintaining the same world size.
+
 [ExecuteAlways]
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class MarchingCubes : MonoBehaviour
