@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UIElements;
 
 //TODO: divvy up the code so everything isn't on the same file, e.g. seperate mesh rendering from marching cubes logic. 
 //TODO: Remove pointless code, such as inverting surfaces. 
@@ -11,26 +12,16 @@ using UnityEngine;
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class MarchingCubes : MonoBehaviour
 {
-    // Wait helper reused in the coroutine to avoid allocating every frame.
-    private static WaitForSeconds oneSecondWait = new WaitForSeconds(1);
-
-    // Grid dimensions.
-    [SerializeField] private float gridSizeXZ = 16;
-    [SerializeField] private float gridSizeY = 16;
+    
+    [Header("Grid Settings")]
+    [SerializeField] private Vector3 worldSize = new(8.0f, 8.0f, 8.0f);
+    [SerializeField] private int gridResolution = 16;
+    private Vector3 stepSize;
 
     // The isosurface threshold for the marching cubes algorithm.
     // Points with scalar value > `isolevel` are considered "inside" the surface.
     [SerializeField] private float isolevel = 0.5f;
-
-    // Controls the frequency/scale of the Perlin noise used to populate the scalar field.
-    [SerializeField] private float noiseResolution = 0.1f;
-
-    [SerializeField] private bool visualizeNoise;
-
-    // Mesh data produced by the algorithm.
-    private List<Vector3> vertices = new List<Vector3>();
-    private List<int> triangles = new List<int>();
-
+    [SerializeField] private bool visualizeVertices = false;
     // When true, reverse triangle winding so the mesh faces inward.
     [SerializeField] private bool invertSurface = false;
 
@@ -38,12 +29,20 @@ public class MarchingCubes : MonoBehaviour
     // surface is visible from either side.
     [SerializeField] private bool doubleSided = false;
 
+    // Mesh data produced by the algorithm.
+    private List<Vector3> vertices = new();
+    private List<int> triangles = new();
+
     private MeshFilter meshFilter;
     private Mesh proceduralMesh;
 
     // 3D scalar field / density grid used by marching cubes. Each cell corner stores a
     // scalar value (here derived from Perlin noise and vertical distance). 
     private float[,,] densityGrid; // 3D scalar field for marching cubes
+
+
+    // Wait helper reused in the coroutine to avoid allocating every frame.
+    private static WaitForSeconds oneSecondWait = new(1);
 
     
 
@@ -87,6 +86,7 @@ public class MarchingCubes : MonoBehaviour
     // Public entrypoint to (re)generate the procedural mesh.
     public void GenerateMesh()
     {
+        stepSize = new Vector3(worldSize.x / gridResolution, worldSize.y / gridResolution, worldSize.z / gridResolution);
         SetDensityRandomized();
         MarchCubes();
         SetMesh();
@@ -101,12 +101,16 @@ public class MarchingCubes : MonoBehaviour
         // If density population hasn't run yet this may be null.
         if (densityGrid == null) return;
 
-        // iterate only over the non-padded region
-        for (int x = 0; x <= gridSizeXZ; x++)
+        int numCellsX = gridResolution;
+        int numCellsY = gridResolution;
+        int numCellsZ = gridResolution;
+
+        // iterate across all cells including those at margins that use the padding
+        for (int x = 0; x <= numCellsX; x++)
         {
-            for (int y = 0; y <= gridSizeY; y++)
+            for (int y = 0; y <= numCellsY; y++)
             {
-                for (int z = 0; z <= gridSizeXZ; z++)
+                for (int z = 0; z <= numCellsZ; z++)
                 {
                     // Collect scalar values at the 8 corners of the current cube.
                     // The ordering must match the `MarchingTable.Vertices` ordering
@@ -118,10 +122,17 @@ public class MarchingCubes : MonoBehaviour
                         cubeVertices[i] = densityGrid[vertex.x, vertex.y, vertex.z];
                     }
 
+                    // Test to see if this works 
+                    Vector3 worldPos = new Vector3(
+                        (x-1) * stepSize.x,
+                        (y-1) * stepSize.y,
+                        (z-1) * stepSize.z
+                    );
+
                     // Determine the cube configuration and emit triangles.
                     // subtract one to undo padding so mesh coordinates start at origin
                     // map padded indices directly so that coordinate 0 remains empty
-                    MarchCube(new Vector3(x, y, z), GetConfigIndex(cubeVertices));
+                    MarchCube(worldPos, GetConfigIndex(cubeVertices));
                 }
             }
         }
@@ -135,10 +146,8 @@ public class MarchingCubes : MonoBehaviour
         }
 
         int edgeIndex = 0;
-
         for (int t = 0; t < 5; t++)
         {
-
             // The triangle table lists up to 5 triangles per configuration,
             // each triangle consisting of 3 edges. We iterate over those
             // edge indices and create a vertex for each referenced edge.
@@ -151,12 +160,15 @@ public class MarchingCubes : MonoBehaviour
                     return;
                 }
 
+                Vector3 offsetStart = Vector3.Scale(MarchingTable.Edges[triTableValue, 0], stepSize);
+                Vector3 offsetEnd = Vector3.Scale(MarchingTable.Edges[triTableValue, 1], stepSize);
+
                 // Each `triTableValue` encodes an edge by indexing into
                 // `MarchingTable.Edges` which stores the two corner offsets for
                 // that edge. `pos` is the grid cell origin; adding the corner
                 // offsets yields world-space positions for the two edge endpoints.
-                Vector3 edgeStart = pos + MarchingTable.Edges[triTableValue, 0];
-                Vector3 edgeEnd = pos + MarchingTable.Edges[triTableValue, 1];
+                Vector3 edgeStart = pos + offsetStart;
+                Vector3 edgeEnd = pos + offsetEnd;
 
                 // This implementation places the new vertex at the midpoint
                 // between the two edge endpoints. A more accurate approach is
@@ -199,7 +211,7 @@ public class MarchingCubes : MonoBehaviour
 
         // build vertex/triangle lists; may duplicate for double sided
         List<Vector3> meshVerts = vertices;
-        List<int> triList = new List<int>(triangles);
+        List<int> triList = new(triangles);
 
         if (invertSurface)
         {
@@ -290,9 +302,9 @@ public class MarchingCubes : MonoBehaviour
         // Add a one-cell padding on each side in every dimension; the
         // operational domain will occupy indices [1..size] and 0/size+1 are
         // unused boundary layers.
-        int sizeX = (int)gridSizeXZ;
-        int sizeY = (int)gridSizeY;
-        int sizeZ = (int)gridSizeXZ;
+        int sizeX = gridResolution;
+        int sizeY = gridResolution;
+        int sizeZ = gridResolution;
 
         densityGrid = new float[sizeX + 2, sizeY + 2, sizeZ + 2];
 
@@ -310,12 +322,12 @@ public class MarchingCubes : MonoBehaviour
 
     private void OnDrawGizmosSelected()
     {
-        if (!visualizeNoise || !Application.isPlaying) return;
+        if (!visualizeVertices || !Application.isPlaying) return;
 
         // visualize full padded grid (including boundaries)
-        int sizeX = (int)gridSizeXZ + 2;
-        int sizeY = (int)gridSizeY + 2;
-        int sizeZ = (int)gridSizeXZ + 2;
+        int sizeX = gridResolution + 2;
+        int sizeY = gridResolution + 2;
+        int sizeZ = gridResolution + 2;
         for (int x = 0; x < sizeX; x++)
         {
             for (int y = 0; y < sizeY; y++)
@@ -329,9 +341,25 @@ public class MarchingCubes : MonoBehaviour
                     // `densityGrid` may exceed 1.0 since they represent distances.
                     float v = Mathf.Clamp01(densityGrid[x, y, z]);
                     Gizmos.color = new Color(v, v, v, 1);
-                    Gizmos.DrawSphere(new Vector3(x, y, z), 0.2f);
+                    Gizmos.DrawSphere(new Vector3(x*stepSize.x, y*stepSize.y, z*stepSize.z), 0.2f);
                 }
             }
         }
+    }
+
+    // helper function to convert world position to grid index, accounting for the transform and grid scaling
+    public Vector3Int WorldToGridIndex(Vector3 worldPos){
+
+        Vector3 localPos = transform.InverseTransformPoint(worldPos);
+
+        float stepX = worldSize.x / gridResolution;
+        float stepY = worldSize.y / gridResolution;
+        float stepZ = worldSize.z / gridResolution;
+
+        int x = Mathf.RoundToInt(localPos.x / stepX) + 1; // +1 for padding
+        int y = Mathf.RoundToInt(localPos.y / stepY) + 1;
+        int z = Mathf.RoundToInt(localPos.z / stepZ) + 1;
+
+        return new Vector3Int(x, y, z);
     }
 }
