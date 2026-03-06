@@ -12,92 +12,148 @@ using UnityEngine.UIElements;
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class MarchingCubes : MonoBehaviour
 {
-    
+    // =========================================================
+    // --- SETTINGS ---
+    // =========================================================
     [Header("Grid Settings")]
     [SerializeField] private Vector3 worldSize = new(8.0f, 8.0f, 8.0f);
     [SerializeField] private int gridResolution = 16;
-    private Vector3 stepSize;
-
+    [SerializeField] private bool randomizeDensity = false;
+    
+    [Header("Generation Mode")]
     // The isosurface threshold for the marching cubes algorithm.
-    // Points with scalar value > `isolevel` are considered "inside" the surface.
+    // Points with density value > `isolevel` are considered "inside" the surface.
     [SerializeField] private float isolevel = 0.5f;
-    [SerializeField] private bool visualizeVertices = false;
     // When true, reverse triangle winding so the mesh faces inward.
     [SerializeField] private bool invertSurface = false;
-
     // When true, generate both the normal and inverted-side triangles so the
     // surface is visible from either side.
     [SerializeField] private bool doubleSided = false;
 
-    // Mesh data produced by the algorithm.
-    private List<Vector3> vertices = new();
-    private List<int> triangles = new();
+    [Header("Debug")]
+    [SerializeField] private bool visualizeVertices = false;
 
+
+    // =========================================================
+    // INTERNAL DATA 
+    // =========================================================
+    private float[,,] densityGrid; // 3D scalar field for marching cubes
+    private Vector3 stepSize;
+    
+    private List<Vector3> vertices = new(); // Mesh data produced by the algorithm.
+    private List<int> triangles = new(); // Ditto
+    private static WaitForSeconds oneSecondWait = new(1); // I honestly don't know why we do this. 
+
+
+    // -- COMPONENT REFERENCES ---
     private MeshFilter meshFilter;
     private Mesh proceduralMesh;
 
-    // 3D scalar field / density grid used by marching cubes. Each cell corner stores a
-    // scalar value (here derived from Perlin noise and vertical distance). 
-    private float[,,] densityGrid; // 3D scalar field for marching cubes
 
-
-    // Wait helper reused in the coroutine to avoid allocating every frame.
-    private static WaitForSeconds oneSecondWait = new(1);
-
+    // =========================================================
+    // UNITY MESSAGES AND LIFECYCLE METHODS
+    // =========================================================
+    private void OnEnable() => InitialSetup();
+    private void OnValidate() => InitialSetup();
     
-
     void Start()
     {
-        meshFilter = GetComponent<MeshFilter>();
-        EnsureMeshInitialized();
-        StartCoroutine(UpdateAll());
+
+        InitialSetup();
+        if (randomizeDensity && Application.isPlaying)
+        {
+            StartCoroutine(RandomizeGridRoutine());
+        }  
     }
 
-    private void OnEnable()
+    private void InitialSetup()
     {
         meshFilter = GetComponent<MeshFilter>();
         EnsureMeshInitialized();
-        if (!Application.isPlaying)
-        {
-            GenerateMesh();
-        }
-    }
-
-    private void OnValidate()
-    {
-        if (!Application.isPlaying)
-        {
-            meshFilter = GetComponent<MeshFilter>();
-            EnsureMeshInitialized();
-            GenerateMesh();
-        }
-    }
-
-    private IEnumerator UpdateAll()
-    {
-        while (true)
-        {
-            GenerateMesh();
-            yield return oneSecondWait;  
-        }
+        GenerateMesh();
         
     }
 
-    // Public entrypoint to (re)generate the procedural mesh.
+    // =========================================================
+    // API & UTILITIES
+    // =========================================================
     public void GenerateMesh()
     {
-        stepSize = new Vector3(worldSize.x / gridResolution, worldSize.y / gridResolution, worldSize.z / gridResolution);
-        SetDensityRandomized();
+        stepSize = new Vector3(worldSize.x / gridResolution, 
+                               worldSize.y / gridResolution, 
+                               worldSize.z / gridResolution);
+
+        if (randomizeDensity) InitializeDensityRandomized();
+        else InitializeDensity();
+
         MarchCubes();
         SetMesh();
     }
 
+    // helper function to convert world position to grid index, 
+    // accounting for the transform and grid scaling
+    public Vector3Int WorldToGridIndex(Vector3 worldPos){
+
+        Vector3 localPos = transform.InverseTransformPoint(worldPos);
+
+        int x = Mathf.RoundToInt(localPos.x / stepSize.x) + 1; // +1 for padding (why?)
+        int y = Mathf.RoundToInt(localPos.y / stepSize.y) + 1;
+        int z = Mathf.RoundToInt(localPos.z / stepSize.z) + 1;
+
+        return new Vector3Int(x, y, z);
+    }
+
+
+    // =========================================================
+    // DATA POPULATION
+    // =========================================================
+    private void InitializeDensity()
+    {
+        // Add a one-cell padding on each side in every dimension; the
+        // operational domain will occupy indices [1..size], 0 & size+1 are
+        // unused boundary layers.
+        densityGrid = new float[gridResolution + 2, gridResolution + 2, gridResolution + 2];
+
+        // You can make nested for-loops a lot more compact in C#
+        for (int x = 1; x <= gridResolution; x++)    
+            for (int y = 1; y <= gridResolution; y++)    
+                for (int z = 1; z <= gridResolution; z++)
+                    densityGrid[x, y, z] = 1.0f;   
+    }
+
+    private void InitializeDensityRandomized()
+    {
+        // Add a one-cell padding on each side in every dimension; the
+        // operational domain will occupy indices [1..size] and 0/size+1 are
+        // unused boundary layers.
+        densityGrid = new float[gridResolution + 2, gridResolution + 2, gridResolution + 2];
+
+        for (int x = 1; x <= gridResolution; x++)
+            for (int y = 1; y <= gridResolution; y++)
+                for (int z = 1; z <= gridResolution; z++)
+                    densityGrid[x, y, z] = Random.value;
+    }
+    
+    // Coroutine that updates the mesh every second with random values. 
+    private IEnumerator RandomizeGridRoutine()
+    {
+        while (randomizeDensity)
+        {
+            GenerateMesh();
+            yield return oneSecondWait;  
+        }
+    }
+
+
+    // =========================================================
+    // MARCHING CUBES
+    // =========================================================
     private void MarchCubes()
     {
         vertices.Clear();
         triangles.Clear();
 
-        // Quick sanity: densityGrid should be populated before marching.
+        // densityGrid should be populated before marching.
         // If density population hasn't run yet this may be null.
         if (densityGrid == null) return;
 
@@ -202,6 +258,10 @@ public class MarchingCubes : MonoBehaviour
         return configurationIndex;
     }
 
+
+    // =========================================================
+    // MESH CONSTRUCTION
+    // =========================================================
     private void SetMesh()
     {
         EnsureMeshInitialized();
@@ -294,32 +354,10 @@ public class MarchingCubes : MonoBehaviour
         }
     }
 
-    // Populate the density grid with random values per grid point.
-    // This replaces the previous Perlin-based population and is useful
-    // for testing noisy, stochastic scalar fields.
-    private void SetDensityRandomized()
-    {
-        // Add a one-cell padding on each side in every dimension; the
-        // operational domain will occupy indices [1..size] and 0/size+1 are
-        // unused boundary layers.
-        int sizeX = gridResolution;
-        int sizeY = gridResolution;
-        int sizeZ = gridResolution;
-
-        densityGrid = new float[sizeX + 2, sizeY + 2, sizeZ + 2];
-
-        for (int x = 1; x <= sizeX; x++)
-        {
-            for (int y = 1; y <= sizeY; y++)
-            {
-                for (int z = 1; z <= sizeZ; z++)
-                {
-                    densityGrid[x, y, z] = Random.value;
-                }
-            }
-        }
-    }
-
+    
+    // =========================================================
+    // DEBUG VISUALIZATION
+    // =========================================================
     private void OnDrawGizmosSelected()
     {
         if (!visualizeVertices || !Application.isPlaying) return;
@@ -346,20 +384,5 @@ public class MarchingCubes : MonoBehaviour
             }
         }
     }
-
-    // helper function to convert world position to grid index, accounting for the transform and grid scaling
-    public Vector3Int WorldToGridIndex(Vector3 worldPos){
-
-        Vector3 localPos = transform.InverseTransformPoint(worldPos);
-
-        float stepX = worldSize.x / gridResolution;
-        float stepY = worldSize.y / gridResolution;
-        float stepZ = worldSize.z / gridResolution;
-
-        int x = Mathf.RoundToInt(localPos.x / stepX) + 1; // +1 for padding
-        int y = Mathf.RoundToInt(localPos.y / stepY) + 1;
-        int z = Mathf.RoundToInt(localPos.z / stepZ) + 1;
-
-        return new Vector3Int(x, y, z);
-    }
 }
+
