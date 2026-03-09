@@ -133,6 +133,45 @@ public class MarchingCubes : MonoBehaviour
         
     }
 
+    public int GetGridResolution()
+    {
+        return gridResolution;
+    }
+
+    public float GetDensityAt(int x, int y, int z)
+    {
+        int[] xyz = {x, y, z};
+        foreach (int i in xyz)
+        {
+            if (i < 0 || i >= gridResolution)
+            {
+                return -1;
+            }
+        }
+
+        return densityGrid[x+1, y+1, z+1];
+    }
+
+    public void SetDensityAt(int x, int y, int z, float density)
+    {
+        int[] xyz = {x, y, z};
+        foreach (int i in xyz)
+        {
+            if (i < 0 || i >= gridResolution)
+            {
+                return;
+            }
+        }
+
+        densityGrid[x+1, y+1, z+1] = density;
+    }
+
+    public void Refresh()
+    {
+        MarchCubes();
+        SetMesh();
+    }
+
     // =========================================================
     // DATA POPULATION
     // =========================================================
