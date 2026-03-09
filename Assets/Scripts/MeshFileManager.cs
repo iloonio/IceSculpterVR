@@ -9,8 +9,6 @@ using UnityEngine.UI;
 public class MeshFileManager : MonoBehaviour
 {
     [SerializeField] private MarchingCubes m_MarchingCubes;
-    [SerializeField] private Button m_SaveButton;
-    [SerializeField] private Button m_LoadButton;
 
     [SerializeField] private bool m_Save = false;
     [SerializeField] private bool m_Load = false;
