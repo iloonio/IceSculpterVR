@@ -206,10 +206,8 @@ public class MarchingCubes : MonoBehaviour
 
     public void Refresh()
     {
-        foreach (MarchingChunk chunk in chunks)
-        {
-            chunk.GenerateMesh();
-        }
+        //MarchCubes();
+        //SetMesh();
     }
 
     // =========================================================
