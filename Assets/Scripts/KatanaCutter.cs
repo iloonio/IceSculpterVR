@@ -21,7 +21,7 @@ public class KatanaCutter : MonoBehaviour
         {
             Vector3 hitPoint = (transform.position);
 
-            _ = new WaitForSeconds(0.5f);
+            _ = new WaitForSeconds(0.1f);
             StartCoroutine(Stall(hitPoint)); // Stall to prevent multiple cuts in the same frame
             
             marchingCubes.SetDensityAtPos(hitPoint, 0f); // Set density to 0 to create a hole
