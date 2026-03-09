@@ -24,7 +24,7 @@ public class KatanaCutter : MonoBehaviour
             _ = new WaitForSeconds(0.1f);
             StartCoroutine(Stall(hitPoint)); // Stall to prevent multiple cuts in the same frame
             
-            marchingCubes.SetDensityAtPos(hitPoint, 0f); // Set density to 0 to create a hole
+            marchingCubes.SetDensityAtPos(hitPoint, 0f, marchingCubes.stepSize.x); // Set density to 0 to create a hole, set radius to scale with stepsize
         } else
         {
             Debug.Log("Hit non-marching cubes object: " + other.name);

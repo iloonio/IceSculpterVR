@@ -130,19 +130,21 @@ public class MarchingCubes : MonoBehaviour
     }
 
 
-    public void SetDensityAtPos(Vector3 worldPos, float density)
+    public void SetDensityAtPos(Vector3 worldPos, float density, float brushRadius)
     {
         Vector3 localPos = transform.InverseTransformPoint(worldPos);
         Vector3Int gridIndex = WorldToGridIndex(worldPos);
         bool gridUpdated = false; //update flag to rebuild the mesh
+        int radiusInCells = Mathf.CeilToInt(brushRadius/stepSize.x);
+        radiusInCells = Mathf.Max(1, radiusInCells); //ensure we always affect atleast one cell
 
-        int maxX = Math.Min(gridResolution+1, gridIndex.x+1);
-        int maxY = Math.Min(gridResolution+1, gridIndex.y+1);
-        int maxZ = Math.Min(gridResolution+1, gridIndex.z+1);
+        int maxX = Math.Min(gridResolution+1, gridIndex.x+radiusInCells);
+        int maxY = Math.Min(gridResolution+1, gridIndex.y+radiusInCells);
+        int maxZ = Math.Min(gridResolution+1, gridIndex.z+radiusInCells);
 
-        int minX = Math.Max(1, gridIndex.x-1);
-        int minY = Math.Max(1, gridIndex.y-1);      
-        int minZ = Math.Max(1, gridIndex.z-1);
+        int minX = Math.Max(1, gridIndex.x-radiusInCells);
+        int minY = Math.Max(1, gridIndex.y-radiusInCells);      
+        int minZ = Math.Max(1, gridIndex.z-radiusInCells);
 
         for (int x = minX; x <= maxX; x++)
             for (int y = minY; y <= maxY; y++)
@@ -150,7 +152,7 @@ public class MarchingCubes : MonoBehaviour
                 {
                     Vector3 point = new Vector3((x-1)*stepSize.x, (y-1)*stepSize.y, (z-1)*stepSize.z); 
 
-                    if (Vector3.Distance(localPos, point) <= stepSize.x && densityGrid[x, y, z] != density)
+                    if (Vector3.Distance(localPos, point) <= brushRadius && densityGrid[x, y, z] != density)
                     {
                         densityGrid[x, y, z] = density;
                         gridUpdated = true;
