@@ -8,11 +8,18 @@ public class IceGunProjectile : MonoBehaviour
 
         if (marchingCubes != null)
         {
-            Vector3 hitPoint = (transform.position);
+            marchingCubes.SetDensityAtPos(transform.position, 1.0f, 0.15f);
+        }
+    }
 
-            marchingCubes.SetDensityAtPos(hitPoint, 1.0f);
+    public void OnTriggerStay(Collider other)
+    {
+        MarchingCubes marchingCubes = other.GetComponentInParent<MarchingCubes>();
 
-            Destroy(gameObject, 0.0f); // destroy the game object after it has been applied. 
+        if (marchingCubes != null)
+        {
+            marchingCubes.SetDensityAtPos(transform.position, 1.0f, 0.15f);
+            Destroy(gameObject, 0.0f);
         }
     }
 }
