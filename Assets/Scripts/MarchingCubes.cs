@@ -1,15 +1,12 @@
 using System.Collections;
 using System.Collections.Generic;
+using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.UIElements;
 
-//TODO: divvy up the code so everything isn't on the same file, e.g. seperate mesh rendering from marching cubes logic. 
-//TODO: Remove pointless code, such as inverting surfaces. 
-//TODO: add a function that reduces or increase value at a set vertex. 
-//TODO: add resolution to the grid, so we can increase and decrease the number of vertices while maintaining the same world size.
-
 [ExecuteAlways]
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
+[RequireComponent(typeof(MeshCollider))]
 public class MarchingCubes : MonoBehaviour
 {
     // =========================================================
@@ -24,11 +21,6 @@ public class MarchingCubes : MonoBehaviour
     // The isosurface threshold for the marching cubes algorithm.
     // Points with density value > `isolevel` are considered "inside" the surface.
     [SerializeField] private float isolevel = 0.5f;
-    // When true, reverse triangle winding so the mesh faces inward.
-    [SerializeField] private bool invertSurface = false;
-    // When true, generate both the normal and inverted-side triangles so the
-    // surface is visible from either side.
-    [SerializeField] private bool doubleSided = false;
 
     [Header("Debug")]
     [SerializeField] private bool visualizeVertices = false;
@@ -43,6 +35,16 @@ public class MarchingCubes : MonoBehaviour
     private List<Vector3> vertices = new(); // Mesh data produced by the algorithm.
     private List<int> triangles = new(); // Ditto
     private static WaitForSeconds oneSecondWait = new(1); // I honestly don't know why we do this. 
+    private bool IsPointInBox(Vector3 point, Vector3 boxCenter, Vector3 halfExtents, Quaternion rotation)
+    {
+        // Transform the point into the box's local space
+        Vector3 localPoint = Quaternion.Inverse(rotation) * (point - boxCenter);
+
+        // Check if the local point is within the half extents of the box
+        return Mathf.Abs(localPoint.x) <= halfExtents.x &&
+               Mathf.Abs(localPoint.y) <= halfExtents.y &&
+               Mathf.Abs(localPoint.z) <= halfExtents.z;
+    }
 
 
     // -- COMPONENT REFERENCES ---
@@ -58,7 +60,6 @@ public class MarchingCubes : MonoBehaviour
     
     void Start()
     {
-
         InitialSetup();
         if (randomizeDensity && Application.isPlaying)
         {
@@ -69,6 +70,7 @@ public class MarchingCubes : MonoBehaviour
     private void InitialSetup()
     {
         meshFilter = GetComponent<MeshFilter>();
+
         EnsureMeshInitialized();
         GenerateMesh();
         
@@ -92,8 +94,8 @@ public class MarchingCubes : MonoBehaviour
 
     // helper function to convert world position to grid index, 
     // accounting for the transform and grid scaling
-    public Vector3Int WorldToGridIndex(Vector3 worldPos){
-
+    public Vector3Int WorldToGridIndex(Vector3 worldPos)
+    {
         Vector3 localPos = transform.InverseTransformPoint(worldPos);
 
         int x = Mathf.RoundToInt(localPos.x / stepSize.x) + 1; // +1 for padding (why?)
@@ -104,6 +106,33 @@ public class MarchingCubes : MonoBehaviour
     }
 
 
+    public void SetDensityAtPos(Vector3 worldPos, float density)
+    {
+        Vector3 localPos = transform.InverseTransformPoint(worldPos);
+        Vector3Int gridIndex = WorldToGridIndex(worldPos);
+        bool gridUpdated = false; //update flag to rebuild the mesh
+
+        for (int x = 1; x <= gridResolution+1; x++)
+            for (int y = 1; y <= gridResolution+1; y++)
+                for (int z = 1; z <= gridResolution+1; z++)
+                {
+                    Vector3 point = new Vector3((x-1)*stepSize.x, (y-1)*stepSize.y, (z-1)*stepSize.z); 
+
+                    if (Vector3.Distance(localPos, point) <= 0.5f)
+                    {
+                        densityGrid[x, y, z] = density;
+                        gridUpdated = true;
+                        Debug.Log($"Set density at grid index ({x}, {y}, {z}) to {density}");
+                    }
+                }   
+        if (gridUpdated)
+        {
+            MarchCubes();
+            SetMesh();
+        }
+        
+    }
+
     // =========================================================
     // DATA POPULATION
     // =========================================================
@@ -112,7 +141,13 @@ public class MarchingCubes : MonoBehaviour
         // Add a one-cell padding on each side in every dimension; the
         // operational domain will occupy indices [1..size], 0 & size+1 are
         // unused boundary layers.
-        densityGrid = new float[gridResolution + 2, gridResolution + 2, gridResolution + 2];
+        int requiredSize = gridResolution + 2;
+
+        // Only allocate memory is density grid changes or isn't yet allocated. 
+        if (densityGrid == null || densityGrid.GetLength(0) != requiredSize)
+        {
+            densityGrid = new float[requiredSize, requiredSize, requiredSize];
+        }
 
         // You can make nested for-loops a lot more compact in C#
         for (int x = 1; x <= gridResolution; x++)    
@@ -126,7 +161,13 @@ public class MarchingCubes : MonoBehaviour
         // Add a one-cell padding on each side in every dimension; the
         // operational domain will occupy indices [1..size] and 0/size+1 are
         // unused boundary layers.
-        densityGrid = new float[gridResolution + 2, gridResolution + 2, gridResolution + 2];
+        int requiredSize = gridResolution + 2;
+
+        // Only allocate memory is density grid changes or isn't yet allocated. 
+        if (densityGrid == null || densityGrid.GetLength(0) != requiredSize)
+        {
+            densityGrid = new float[requiredSize, requiredSize, requiredSize];
+        }
 
         for (int x = 1; x <= gridResolution; x++)
             for (int y = 1; y <= gridResolution; y++)
@@ -266,86 +307,44 @@ public class MarchingCubes : MonoBehaviour
     {
         EnsureMeshInitialized();
 
+        // 1. Flip the winding order of the triangles so the mesh faces outward
+        for (int i = 0; i < triangles.Count; i += 3)
+        {
+            int temp = triangles[i + 1];
+            triangles[i + 1] = triangles[i + 2];
+            triangles[i + 2] = temp;
+        }
+
+        // 2. build collision mesh
         proceduralMesh.Clear();
         proceduralMesh.SetVertices(vertices);
-
-        // build vertex/triangle lists; may duplicate for double sided
-        List<Vector3> meshVerts = vertices;
-        List<int> triList = new(triangles);
-
-        if (invertSurface)
-        {
-            // flip winding on the original set
-            triList = new List<int>(triangles.Count);
-            for (int i = 0; i < triangles.Count; i += 3)
-            {
-                triList.Add(triangles[i]);
-                triList.Add(triangles[i + 2]);
-                triList.Add(triangles[i + 1]);
-            }
-        }
-
-        if (doubleSided)
-        {
-            // duplicate vertices for the inverted side so normals can differ
-            meshVerts = new List<Vector3>(vertices);
-            int origVertCount = vertices.Count;
-            int triCount = triList.Count;
-            for (int i = 0; i < triCount; i += 3)
-            {
-                // add reversed triangle with new vertex indices
-                meshVerts.Add(meshVerts[triList[i]]);
-                meshVerts.Add(meshVerts[triList[i + 2]]);
-                meshVerts.Add(meshVerts[triList[i + 1]]);
-                triList.Add(origVertCount++);
-                triList.Add(origVertCount++);
-                triList.Add(origVertCount++);
-            }
-        }
-
-        proceduralMesh.SetVertices(meshVerts);
-        proceduralMesh.SetTriangles(triList, 0);
-
+        proceduralMesh.SetTriangles(triangles, 0);
         proceduralMesh.RecalculateNormals();
-        if (invertSurface || doubleSided)
-        {
-            var ns = proceduralMesh.normals;
-            if (doubleSided)
-            {
-                // invert normals of the duplicated (second half) vertices
-                int start = meshVerts.Count - (triList.Count/3)*3;
-                for (int i = start; i < ns.Length; i++) ns[i] = -ns[i];
-            }
-            else
-            {
-                for (int i = 0; i < ns.Length; i++) ns[i] = -ns[i];
-            }
-            proceduralMesh.normals = ns;
-        }
-
-        proceduralMesh.RecalculateNormals();
-        if (invertSurface)
-        {
-            // normals have been calculated outward; flip them to point inward
-            var ns = proceduralMesh.normals;
-            for (int i = 0; i < ns.Length; i++) ns[i] = -ns[i];
-            proceduralMesh.normals = ns;
-        }
         proceduralMesh.RecalculateBounds();
 
+        // 3. Assign to renderer
         if (Application.isPlaying)
             meshFilter.mesh = proceduralMesh;
         else
             meshFilter.sharedMesh = proceduralMesh;
+
+        // 4. Assign to collider
+        if (TryGetComponent(out MeshCollider meshCollider))
+        {
+            meshCollider.sharedMesh = proceduralMesh;
+            meshCollider.enabled = false; // toggle to force update
+            meshCollider.enabled = true;
+        }
     }
 
     private void EnsureMeshInitialized()
     {
         if (meshFilter == null) meshFilter = GetComponent<MeshFilter>();
+        
         if (proceduralMesh == null)
         {
             proceduralMesh = meshFilter.sharedMesh != null ? meshFilter.sharedMesh : new Mesh();
-            proceduralMesh.name = "ProceduralMarchingCubes";
+            proceduralMesh.name = "MarchingCubes";
             proceduralMesh.MarkDynamic();
             if (Application.isPlaying)
                 meshFilter.mesh = proceduralMesh;
@@ -361,6 +360,8 @@ public class MarchingCubes : MonoBehaviour
     private void OnDrawGizmosSelected()
     {
         if (!visualizeVertices || !Application.isPlaying) return;
+
+        Gizmos.matrix = transform.localToWorldMatrix;
 
         // visualize full padded grid (including boundaries)
         int sizeX = gridResolution + 2;
@@ -378,8 +379,8 @@ public class MarchingCubes : MonoBehaviour
                     // Clamp or remap the scalar for color display — values in
                     // `densityGrid` may exceed 1.0 since they represent distances.
                     float v = Mathf.Clamp01(densityGrid[x, y, z]);
-                    Gizmos.color = new Color(v, v, v, 1);
-                    Gizmos.DrawSphere(new Vector3(x*stepSize.x, y*stepSize.y, z*stepSize.z), 0.2f);
+                    Gizmos.color = new Color(v, v, v, 0.5f);
+                    Gizmos.DrawSphere(new Vector3((x-1)*stepSize.x, (y-1)*stepSize.y, (z-1)*stepSize.z), 0.02f);
                 }
             }
         }

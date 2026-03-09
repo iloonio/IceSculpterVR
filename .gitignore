@@ -100,3 +100,9 @@ InitTestScene*.unity*
 
 # Auto-generated Mac folder file
 .DS_Store
+
+# temp folders
+/iceSculpter_BackUpThisFolder_ButDontShipItWithYourGame
+/IceSculptingVR_BurstDebugInformation_DoNotShip
+
+/Assets/XR/Temp
