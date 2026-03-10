@@ -208,8 +208,11 @@ public class MarchingCubes : MonoBehaviour
 
     public void Refresh()
     {
-        //MarchCubes();
-        //SetMesh();
+        foreach (var chunk in chunks)
+        {
+            if(chunk == null) continue; // Guard against uninitialized chunk references
+            chunk.GenerateMesh();
+        }
     }
 
     // =========================================================
